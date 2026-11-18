@@ -44,21 +44,8 @@ button.primary { flex:1; background:var(--accent); color:#fff; font-weight:600; 
 button.on { outline:2px solid var(--accent); }
 #recenter { position:absolute; right:10px; z-index:1000; bottom:150px; width:44px; height:44px; padding:0;
   border-radius:22px; box-shadow:0 2px 8px #0003; background:var(--card); font-size:20px; }
-#panel { position:absolute; inset:0; z-index:2000; background:var(--bg); display:none; flex-direction:column; }
-#panel.open { display:flex; }
-#panel header { display:flex; align-items:center; gap:10px; padding:calc(12px + env(safe-area-inset-top)) 14px 10px;
-  border-bottom:1px solid var(--line); }
-#panel h1 { font-size:18px; margin:0; flex:1; }
-#total { padding:10px 14px; color:var(--muted); font-size:13px; border-bottom:1px solid var(--line); }
-#list { overflow:auto; flex:1; }
-.st { display:flex; gap:10px; align-items:center; padding:10px 14px; border-bottom:1px solid var(--line); cursor:pointer; }
-.st:active, .st.cur { background:var(--hl); }
-.sw { width:10px; height:10px; border-radius:50%; flex:none; }
-.st .t { flex:1; min-width:0; }
-.st .t div { white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
-.st small { color:var(--muted); }
-.pill { font-size:12px; padding:2px 8px; border-radius:10px; background:var(--hl); color:var(--muted); white-space:nowrap; }
-.pill.done { background:var(--ok); color:#fff; }
+#bnext { font-size:13px; color:var(--muted); margin:-4px 0 10px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+#bnext b { color:var(--fg); }
 #sim { display:none; gap:6px; margin-top:8px; align-items:center; font-size:13px; color:var(--muted); }
 #sim.show { display:flex; }
 #sim button { padding:6px 10px; }
@@ -74,7 +61,7 @@ button.on { outline:2px solid var(--accent); }
 <div id="guide" class="card">
   <div id="gicon">↑</div>
   <div id="gtext">
-    <div id="gdist">Pick a stage</div>
+    <div id="gdist">Loading…</div>
     <div id="gwhat"></div>
     <div id="gnow"></div>
   </div>
@@ -83,10 +70,10 @@ button.on { outline:2px solid var(--accent); }
 <button id="recenter" title="Follow my position">◎</button>
 
 <div id="bar" class="card">
-  <div id="binfo"><span id="bstage">—</span><span id="bkm"></span></div>
+  <div id="binfo"><span id="bkm"></span><span id="btoday"></span></div>
   <div id="prog"><i></i></div>
+  <div id="bnext"></div>
   <div id="btns">
-    <button id="bstages">Stages</button>
     <button id="bgo" class="primary">Start</button>
     <button id="bmore" title="More">⋯</button>
   </div>
@@ -97,11 +84,6 @@ button.on { outline:2px solid var(--accent); }
   </div>
 </div>
 
-<div id="panel">
-  <header><h1>Stages</h1><button id="pclose">Close</button></header>
-  <div id="total"></div>
-  <div id="list"></div>
-</div>
 <div id="toast"></div>
 
 <script src="app.js"></script>

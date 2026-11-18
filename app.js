@@ -1,10 +1,12 @@
 "use strict";
-// Paris Walk – follow one stage of the "every street" circuit.
+// Paris Walk – follow the whole "every street" circuit as one continuous route.
+// Stop whenever you like; the app resumes where you left off.
 // Progress is tracked as distance along the route (not "nearest line"), so a
 // street walked out and back is never confused with its return leg.
 
 const AHEAD_M = 300;        // bold part of the route
 const PREVIEW_M = 1200;     // faint dashed part after it
+const WALKED_M = 3000;      // grey "already walked" trail shown behind you
 const ON_ROUTE_M = 30;      // GPS fix within this distance = on route
 const ALERT_M = 30;         // vibrate this far before a turn / U-turn
 const MAX_SPEED = 3;       // m/s, fastest plausible walking pace
@@ -33,8 +35,8 @@ const lyr = {
 const me = L.marker([0, 0], { icon: L.divIcon({ className: "", html: '<div class="me"></div>', iconSize: [18, 18] }), zIndexOffset: 1000 });
 
 // ---------- state
-let INDEX = null, S = null;          // stage list, current stage
-let s = 0;                           // progress along the stage (m)
+let S = null;                        // the route
+let s = 0;                           // progress along the route (m)
 let follow = true, tracking = false, watchId = null, offCount = 0, alerted = new Set();
 let simMult = 0, simTimer = null, simS = 0, wakeLock = null, lastSave = 0, lastFix = null, lastOnRoute = 0;
 
@@ -49,6 +51,7 @@ function prepare(st) {
   st.uturnD = st.uturns.map(i => d[i]);
   st.nameD = st.names.map(([i, nm]) => [d[i], nm]);
   st.newD = st.new.map(([i, f]) => [d[i], f]);
+  st.stopD = st.stops.map(([i, nm]) => [d[i], nm]);
   return st;
 }
 function seg(dd) {            // index i with d[i] <= dd < d[i+1]
@@ -72,7 +75,12 @@ function slice(a, b) {
   return out;
 }
 function bearing(a, b) { const p = at(a), q = at(b); return Math.atan2(q.x - p.x, q.y - p.y) * 180 / Math.PI; }
-function runAt(runs, dd) { let r = runs[0]; for (const x of runs) { if (x[0] <= dd + .01) r = x; else break; } return r; }
+function upper(arr, v, key = x => x) {   // first index with key(arr[i]) > v
+  let lo = 0, hi = arr.length;
+  while (lo < hi) { const m = (lo + hi) >> 1; if (key(arr[m]) > v) hi = m; else lo = m + 1; }
+  return lo;
+}
+function runAt(runs, dd) { return runs[Math.max(0, upper(runs, dd + .01, r => r[0]) - 1)]; }
 
 // project a fix on the route between distances lo..hi; returns sorted candidates
 function project(px, py, lo, hi) {
@@ -115,11 +123,17 @@ function cells() {
   if (S.cx) return;
   const n = Math.floor(S.total / GRID) + 1;
   S.cx = new Float32Array(n); S.cy = new Float32Array(n);
-  for (let j = 0; j < n; j++) { const p = at(j * GRID); S.cx[j] = p.x; S.cy[j] = p.y; }
+  for (let j = 0, i = 0; j < n; j++) {
+    const dd = Math.min(j * GRID, S.total);
+    while (i < S.d.length - 2 && S.d[i + 1] <= dd) i++;
+    const L = S.d[i + 1] - S.d[i], t = L > 0 ? (dd - S.d[i]) / L : 0;
+    S.cx[j] = S.x[i] + (S.x[i + 1] - S.x[i]) * t; S.cy[j] = S.y[i] + (S.y[i + 1] - S.y[i]) * t;
+  }
+  P = new Float64Array(n);
 }
 function resetBelief(at_m) {
   cells();
-  P = new Float64Array(S.cx.length);
+  P.fill(0, pLo, pHi + 1);
   const j = Math.max(0, Math.min(P.length - 1, Math.round(at_m / GRID)));
   P[j] = 1; pLo = pHi = j;
 }
@@ -156,13 +170,16 @@ function advance(px, py, dt, acc = 10) {
   return true;
 }
 
-function relocate() {          // jump to the nearest point anywhere on the stage
+function relocate() {          // jump to the next time the route passes here
   if (!S || !lastFix) { toast("No GPS position yet"); return; }
   const px = (lastFix.lon - 2.35) * KX, py = (lastFix.lat - LAT0) * KY;
-  const c = project(px, py, 0, S.total), best = Math.min(...c.map(o => o.dist));
+  const c = project(px, py, 0, S.total), best = c.reduce((m, o) => Math.min(m, o.dist), Infinity);
   const near = c.filter(o => o.dist <= best + 8);
-  const ahead = near.filter(o => o.along >= s);
+  const prev = s;
+  const ahead = near.filter(o => o.along >= s - 50);
   s = (ahead.length ? ahead : near).reduce((m, o) => o.along < m.along ? o : m).along;
+  const t = store.get("today", null), jump = s - prev;       // a jump is not "walked today"
+  if (t && t.day === today()) store.set("today", { day: t.day, from: t.from + jump });
   offCount = 0; lastOnRoute = 0; resetBelief(s); alerted.clear(); simS = s; save(true); render(); toast("Position updated");
 }
 
@@ -170,15 +187,16 @@ function save(force) {
   const now = Date.now();
   if (!force && now - lastSave < 5000) return;
   lastSave = now;
-  store.set("s:" + S.n, Math.max(Math.round(s), store.get("s:" + S.n, 0)));
-  if (s >= S.total - 25) store.set("done:" + S.n, true);
+  store.set("pos", Math.round(s));
+  const day = today(), t = store.get("today", null);
+  if (!t || t.day !== day) store.set("today", { day, from: Math.round(s) });
 }
 
 // ---------- guidance
 function guidance() {
   const cur = runAt(S.nameD, s)[1];
   let ev = null;
-  const nx = S.nameD.find(([dd]) => dd > s + 1);
+  const nx = S.nameD[upper(S.nameD, s + 1, r => r[0])];
   if (nx) {
     const delta = ((bearing(nx[0], nx[0] + 12) - bearing(nx[0] - 12, nx[0]) + 540) % 360) - 180;
     const a = Math.abs(delta);
@@ -186,7 +204,7 @@ function guidance() {
       : a < 150 ? [delta > 0 ? "→" : "←", delta > 0 ? "Turn right onto" : "Turn left onto"] : ["↶", "Turn back onto"];
     ev = { at: nx[0], icon, text: `${verb} ${nx[1]}`, cls: a >= 150 ? "uturn" : "" };
   }
-  const ut = S.uturnD.find(dd => dd > s + 1);
+  const ut = S.uturnD[upper(S.uturnD, s + 1)];
   if (ut !== undefined && (!ev || ut <= ev.at + 15)) ev = { at: ut, icon: "↶", text: `Turn back along ${cur}`, cls: "uturn" };
   return { cur, ev };
 }
@@ -194,7 +212,7 @@ function guidance() {
 // ---------- render
 function render() {
   if (!S) return;
-  lyr.walked.setLatLngs(slice(0, s));
+  lyr.walked.setLatLngs(slice(s - WALKED_M, s));
   const ah = slice(s, s + AHEAD_M);
   lyr.ahead.setLatLngs(ah); lyr.casing.setLatLngs(ah);
   lyr.preview.setLatLngs(slice(s + AHEAD_M, s + AHEAD_M + PREVIEW_M));
@@ -204,7 +222,8 @@ function render() {
     L.marker([p.lat, p.lon], { interactive: false, icon: L.divIcon({ className: "arrow", iconSize: [16, 16],
       html: `<div style="transform:rotate(${b}deg)">▲</div>` }) }).addTo(lyr.marks);
   }
-  for (const dd of S.uturnD) if (dd > s && dd < s + AHEAD_M + PREVIEW_M) {
+  for (let k = upper(S.uturnD, s); k < S.uturnD.length && S.uturnD[k] < s + AHEAD_M + PREVIEW_M; k++) {
+    const dd = S.uturnD[k];
     const p = at(dd);
     L.circleMarker([p.lat, p.lon], { radius: 7, color: "#fff", weight: 2, fillColor: "#d97706", fillOpacity: 1 })
       .bindTooltip("U-turn").addTo(lyr.marks);
@@ -214,8 +233,8 @@ function render() {
   const { cur, ev } = guidance();
   const gi = $("gicon");
   if (done) {
-    gi.textContent = "✓"; gi.className = ""; $("gdist").textContent = "Stage complete";
-    $("gwhat").textContent = `Metro ${S.to}`; $("gnow").textContent = "";
+    gi.textContent = "✓"; gi.className = ""; $("gdist").textContent = "Every street walked!";
+    $("gwhat").textContent = "Paris is done."; $("gnow").textContent = "";
   } else if (offCount >= 3) {
     gi.textContent = "?"; gi.className = "off"; $("gdist").textContent = "Off route";
     $("gwhat").textContent = "Walk back to the red line, or tap ⋯ → Re-locate"; $("gnow").textContent = cur;
@@ -231,10 +250,14 @@ function render() {
     }
   } else {
     gi.textContent = "↑"; gi.className = ""; $("gdist").textContent = fmtD(S.total - s);
-    $("gwhat").textContent = `To the end · Metro ${S.to}`; $("gnow").textContent = "On " + cur;
+    $("gwhat").textContent = "To the end"; $("gnow").textContent = "On " + cur;
   }
-  $("bstage").innerHTML = `<b>Stage ${S.n}</b> · ${S.from} → ${S.to}`;
-  $("bkm").innerHTML = `<b>${(s / S.total * S.km).toFixed(1)}</b> / ${S.km.toFixed(1)} km`;   // route km (offset line is a bit longer)
+  const km = m => m / S.total * S.km;            // route km (the offset line is a bit longer)
+  const t = store.get("today", null), from = t && t.day === today() ? t.from : s;
+  $("bkm").innerHTML = `<b>${km(s).toFixed(1)}</b> / ${Math.round(S.km).toLocaleString("en")} km · ${(100 * s / S.total).toFixed(1)}%`;
+  $("btoday").innerHTML = `Today <b>${km(Math.max(0, s - from)).toFixed(1)} km</b>`;
+  const stop = S.stopD[upper(S.stopD, s + 30, r => r[0])];
+  $("bnext").innerHTML = stop ? `Good place to stop: <b>Metro ${stop[1]}</b> in ${fmtD(stop[0] - s)}` : "";
   document.querySelector("#prog i").style.width = (100 * s / S.total) + "%";
   if (follow) {
     const p = lastFix && tracking ? lastFix : at(s);
@@ -260,6 +283,7 @@ function stopTracking() {
   wakeLock?.release?.(); wakeLock = null;
   if (S) save(true);
 }
+function today() { const d = new Date(); return d.getFullYear() + "-" + (d.getMonth() + 1) + "-" + d.getDate(); }
 document.addEventListener("visibilitychange", async () => {
   if (tracking && document.visibilityState === "visible" && !wakeLock) try { wakeLock = await navigator.wakeLock?.request("screen"); } catch {}
 });
@@ -275,47 +299,28 @@ function startSim() {
   }, 1000);
 }
 
-// ---------- stages
-async function openStage(n) {
-  const r = await fetch(`data/stage_${String(n).padStart(3, "0")}.json`);
+// ---------- route
+async function openRoute() {
+  const r = await fetch("data/route.json");
   S = prepare(await r.json());
-  s = Math.min(store.get("s:" + n, 0), S.total);
-  store.set("cur", n); alerted.clear(); offCount = 0; lastOnRoute = 0; resetBelief(s);
+  s = Math.min(store.get("pos", 0), S.total);
+  alerted.clear(); offCount = 0; lastOnRoute = 0; resetBelief(s);
   for (const l of ["ahead", "preview"]) lyr[l].setStyle({ color: S.c });
   lyr.ends.clearLayers();
-  const a = S.pts[0], b = S.pts[S.pts.length - 1];
-  L.circleMarker(a, { radius: 8, color: "#fff", weight: 3, fillColor: "#2e9e44", fillOpacity: 1 }).bindTooltip(`Start · Metro ${S.from}`).addTo(lyr.ends);
-  L.circleMarker(b, { radius: 8, color: "#fff", weight: 3, fillColor: "#111", fillOpacity: 1 }).bindTooltip(`End · Metro ${S.to}`).addTo(lyr.ends);
+  for (const [dd, nm] of S.stopD) {
+    const p = at(dd);
+    L.circleMarker([p.lat, p.lon], { radius: 6, color: "#fff", weight: 2, fillColor: "#111", fillOpacity: 1 })
+      .bindTooltip(`Good place to stop · Metro ${nm}`).addTo(lyr.ends);
+  }
   $("bgo").textContent = s > 0 ? "Resume" : "Start";
   follow = true; render();
-}
-
-function buildList() {
-  let walked = 0, done = 0;
-  $("list").innerHTML = INDEX.stages.map(st => {
-    const p = store.get("s:" + st.n, 0) / 1000, ok = store.get("done:" + st.n, false);
-    walked += ok ? st.km : p; done += ok ? 1 : 0;
-    const pill = ok ? '<span class="pill done">Done</span>' : p > 0 ? `<span class="pill">${p.toFixed(1)} / ${st.km.toFixed(1)} km</span>`
-      : `<span class="pill">${st.km.toFixed(1)} km</span>`;
-    return `<div class="st${S && S.n === st.n ? " cur" : ""}" data-n="${st.n}"><span class="sw" style="background:${st.c}"></span>
-      <div class="t"><div><b>Stage ${st.n}</b></div><div><small>${st.from} → ${st.to}</small></div></div>${pill}</div>`;
-  }).join("");
-  const tot = INDEX.stages.reduce((a, st) => a + st.km, 0);
-  $("total").textContent = `${walked.toFixed(1)} of ${tot.toFixed(0)} km walked · ${done} of ${INDEX.stages.length} stages done`;
 }
 
 // ---------- UI
 function toast(t) { const e = $("toast"); e.textContent = t; e.style.display = "block"; clearTimeout(toast.t); toast.t = setTimeout(() => e.style.display = "none", 2500); }
 function buzz(p) { try { navigator.vibrate?.(p); } catch {} }
 
-$("bgo").onclick = () => S ? (tracking ? stopTracking() : startTracking()) : $("bstages").onclick();
-$("bstages").onclick = () => { buildList(); $("panel").classList.add("open"); document.querySelector(".st.cur")?.scrollIntoView({ block: "center" }); };
-$("pclose").onclick = () => $("panel").classList.remove("open");
-$("list").onclick = e => {
-  const el = e.target.closest(".st"); if (!el) return;
-  if (tracking) stopTracking();
-  $("panel").classList.remove("open"); openStage(+el.dataset.n);
-};
+$("bgo").onclick = () => { if (S) tracking ? stopTracking() : startTracking(); };
 $("bmore").onclick = () => { $("sim").classList.toggle("show"); placeRecenter(); };
 function placeRecenter() { $("recenter").style.bottom = ($("bar").getBoundingClientRect().height + 22) + "px"; }
 window.addEventListener("resize", placeRecenter); placeRecenter();
@@ -329,8 +334,6 @@ $("recenter").onclick = () => { follow = true; render(); };
 map.on("dragstart", () => { follow = false; });
 
 (async () => {
-  INDEX = await (await fetch("data/index.json")).json();
-  const cur = store.get("cur", null);
-  if (cur) openStage(cur); else { buildList(); $("panel").classList.add("open"); }
+  await openRoute();
   if ("serviceWorker" in navigator && window.isSecureContext) navigator.serviceWorker.register("sw.js").catch(() => {});
 })();
