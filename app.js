@@ -38,7 +38,7 @@ const me = L.marker([0, 0], { icon: L.divIcon({ className: "", html: '<div class
 let S = null;                        // the route
 let s = 0;                           // progress along the route (m)
 let follow = true, tracking = false, watchId = null, offCount = 0, alerted = new Set();
-let simMode = false, simMult = 1, simTimer = null, simS = 0, simDetour = null, simBad = false, wakeLock = null, lastSave = 0, lastFix = null, lastOnRoute = 0;
+let simMode = false, simMult = 20, simStart = 0, simTimer = null, simS = 0, simDetour = null, simBad = false, wakeLock = null, lastSave = 0, lastFix = null, lastOnRoute = 0;
 
 // ---------- geometry helpers
 function prepare(st) {
@@ -254,9 +254,9 @@ function render() {
     $("gwhat").textContent = "To the end"; $("gnow").textContent = "On " + cur;
   }
   const km = m => m / S.total * S.km;            // route km (the offset line is a bit longer)
-  const t = store.get("today", null), from = t && t.day === today() ? t.from : s;
+  const t = store.get("today", null), from = simMode ? simStart : t && t.day === today() ? t.from : s;
   $("bkm").innerHTML = `<b>${km(s).toFixed(1)}</b> / ${Math.round(S.km).toLocaleString("en")} km · ${(100 * s / S.total).toFixed(1)}%`;
-  $("btoday").innerHTML = `Today <b>${km(Math.max(0, s - from)).toFixed(1)} km</b>`;
+  $("btoday").innerHTML = `${simMode ? "Simulated" : "Today"} <b>${km(Math.max(0, s - from)).toFixed(2)} km</b>`;
   const stop = S.stopD[upper(S.stopD, s + 30, r => r[0])];
   $("bnext").innerHTML = stop ? `Good place to stop: <b>Metro ${stop[1]}</b> in ${fmtD(stop[0] - s)}` : "";
   document.querySelector("#prog i").style.width = (100 * s / S.total) + "%";
@@ -320,11 +320,13 @@ function simStep() {
 }
 function enterSim() {
   if (tracking) stopTracking();
-  simMode = true; simS = s; simDetour = null;
+  simMode = true; simS = s; simStart = s; simDetour = null;
   $("bar").classList.add("simon"); $("sim").classList.add("show"); $("more").classList.remove("show");
-  $("bsim").style.display = "none"; $("bgo").textContent = "Start walking";
-  placeRecenter(); render();
-  toast("Simulation: tap Start walking");
+  $("bsim").style.display = "none";
+  placeRecenter();
+  startTracking();                     // the virtual walker sets off straight away
+  simStep();
+  toast("Simulated walk ×" + simMult);
 }
 function exitSim() {
   if (tracking) stopTracking();
@@ -374,7 +376,7 @@ $("srelocate").onclick = relocate;
 function placeRecenter() { $("recenter").style.bottom = ($("bar").getBoundingClientRect().height + 22) + "px"; }
 window.addEventListener("resize", placeRecenter); placeRecenter();
 $("sim").querySelectorAll("[data-x]").forEach(b => b.onclick = () => {
-  simMult = +b.dataset.x;
+  simMult = +b.dataset.x; toast(simMult === 1 ? "Real walking pace (5 km/h)" : "Speed ×" + simMult);
   $("sim").querySelectorAll("[data-x]").forEach(o => o.classList.toggle("on", o === b));
 });
 $("relocate").onclick = relocate;
