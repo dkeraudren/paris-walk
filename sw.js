@@ -1,6 +1,6 @@
 // Offline support: app files and route data are cached when first loaded,
 // map tiles are cached as you view them (open a stage's area once on wifi).
-const APP = "pw-app-v2", TILES = "pw-tiles-v1";
+const APP = "pw-app-v3", TILES = "pw-tiles-v1";
 const SHELL = ["./", "index.html", "app.js", "manifest.webmanifest", "icon.svg", "data/route.json",
   "https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.css",
   "https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.js"];

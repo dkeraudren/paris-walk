@@ -38,7 +38,7 @@ const me = L.marker([0, 0], { icon: L.divIcon({ className: "", html: '<div class
 let S = null;                        // the route
 let s = 0;                           // progress along the route (m)
 let follow = true, tracking = false, watchId = null, offCount = 0, alerted = new Set();
-let simMult = 0, simTimer = null, simS = 0, wakeLock = null, lastSave = 0, lastFix = null, lastOnRoute = 0;
+let simMode = false, simMult = 1, simTimer = null, simS = 0, simDetour = null, simBad = false, wakeLock = null, lastSave = 0, lastFix = null, lastOnRoute = 0;
 
 // ---------- geometry helpers
 function prepare(st) {
@@ -139,7 +139,7 @@ function resetBelief(at_m) {
 }
 
 function advance(px, py, dt, acc = 10) {
-  const n = P.length, mult = simTimer ? Math.max(1, simMult) : 1;
+  const n = P.length, mult = simMode ? simMult : 1;
   const fwd = Math.max(2, Math.min(Math.ceil(MAX_SPEED * mult * Math.max(dt, 1) / GRID), Math.ceil(1500 / GRID)));
   const lo = Math.max(0, pLo - BACK_CELLS), hi = Math.min(n - 1, pHi + fwd);
   // 1. predict: Q[j] = sum P[i] for j-fwd <= i <= j (forward) + BACK_W * (j < i <= j+BACK)
@@ -184,6 +184,7 @@ function relocate() {          // jump to the next time the route passes here
 }
 
 function save(force) {
+  if (simMode) return;                 // a simulated walk never touches real progress
   const now = Date.now();
   if (!force && now - lastSave < 5000) return;
   lastSave = now;
@@ -269,8 +270,8 @@ function render() {
 async function startTracking() {
   tracking = true; $("bgo").textContent = "Pause"; follow = true;
   try { wakeLock = await navigator.wakeLock?.request("screen"); } catch {}
-  if (simMult) startSim();
-  else if (!("geolocation" in navigator) || !window.isSecureContext) toast("GPS needs https – use ⋯ → Simulate");
+  if (simMode) startSim();
+  else if (!("geolocation" in navigator) || !window.isSecureContext) toast("GPS needs https – try Simulate");
   else watchId = navigator.geolocation.watchPosition(
     p => onFix(p.coords.latitude, p.coords.longitude, p.coords.accuracy),
     e => toast("GPS: " + e.message), { enableHighAccuracy: true, maximumAge: 2000, timeout: 20000 });
@@ -288,15 +289,52 @@ document.addEventListener("visibilitychange", async () => {
   if (tracking && document.visibilityState === "visible" && !wakeLock) try { wakeLock = await navigator.wakeLock?.request("screen"); } catch {}
 });
 
+// ---------- simulation: a virtual walker follows the route and sends fake GPS fixes
+// once a second. "Wrong turn" walks it 80 m off the route and back; "Bad GPS" adds
+// city-canyon noise and the odd wild fix. Real progress is restored on exit.
 function startSim() {
   clearInterval(simTimer);
-  simS = s;
-  simTimer = setInterval(() => {
-    simS = Math.min(S.total, simS + 1.4 * simMult);
-    const p = at(simS), r = () => (Math.random() - .5) * 8;   // ±4 m GPS noise
-    onFix(p.lat + r() / KY, p.lon + r() / KX, 6);
-    if (simS >= S.total) clearInterval(simTimer);
-  }, 1000);
+  simS = Math.max(simS, s);
+  simTimer = setInterval(simStep, 1000);
+}
+function simStep() {
+  const step = 1.4 * simMult;                    // 1.4 m/s = 5 km/h
+  let p;
+  if (simDetour) {                               // walking away from the route, then back
+    const d = simDetour;
+    if (d.phase === "out") { d.off += Math.min(step, 12); if (d.off >= 80) { d.off = 80; d.phase = "wait"; d.wait = 4; } }
+    else if (d.phase === "wait") { if (--d.wait <= 0) d.phase = "back"; }
+    else { d.off -= Math.min(step, 12); if (d.off <= 0) simDetour = null; }
+    const b = at(simS);
+    p = { x: b.x + d.nx * (simDetour ? d.off : 0), y: b.y + d.ny * (simDetour ? d.off : 0) };
+  } else {
+    simS = Math.min(S.total, simS + step);
+    p = at(simS);
+  }
+  let noise = 4, acc = 6;
+  if (simBad) { noise = 15; acc = 25; if (Math.random() < .08) { noise = 70; acc = 40; } }
+  const r = () => (Math.random() - .5) * 2 * noise;
+  const x = p.x + r(), y = p.y + r();
+  onFix(y / KY + LAT0, x / KX + 2.35, acc);
+  if (simS >= S.total) clearInterval(simTimer);
+}
+function enterSim() {
+  if (tracking) stopTracking();
+  simMode = true; simS = s; simDetour = null;
+  $("bar").classList.add("simon"); $("sim").classList.add("show"); $("more").classList.remove("show");
+  $("bsim").style.display = "none"; $("bgo").textContent = "Start walking";
+  placeRecenter(); render();
+  toast("Simulation: tap Start walking");
+}
+function exitSim() {
+  if (tracking) stopTracking();
+  simMode = false; simDetour = null; simBad = false; $("sbad").classList.remove("on");
+  s = Math.min(store.get("pos", 0), S.total);
+  offCount = 0; lastOnRoute = 0; lastFix = null; alerted.clear(); resetBelief(s); me.remove();
+  $("bar").classList.remove("simon"); $("sim").classList.remove("show");
+  $("bsim").style.display = ""; $("bgo").textContent = s > 0 ? "Resume" : "Start";
+  follow = true; placeRecenter(); render();
+  toast("Back to your real progress");
 }
 
 // ---------- route
@@ -321,13 +359,23 @@ function toast(t) { const e = $("toast"); e.textContent = t; e.style.display = "
 function buzz(p) { try { navigator.vibrate?.(p); } catch {} }
 
 $("bgo").onclick = () => { if (S) tracking ? stopTracking() : startTracking(); };
-$("bmore").onclick = () => { $("sim").classList.toggle("show"); placeRecenter(); };
+$("bmore").onclick = () => { if (simMode) $("sim").classList.toggle("show"); else $("more").classList.toggle("show"); placeRecenter(); };
+$("bsim").onclick = enterSim;
+$("sexit").onclick = exitSim;
+$("swrong").onclick = () => {
+  if (!simMode || !tracking) { toast("Start walking first"); return; }
+  if (simDetour) return;
+  const a = at(simS), b = at(simS + 5), dx = b.x - a.x, dy = b.y - a.y, L = Math.hypot(dx, dy) || 1;
+  simDetour = { phase: "out", off: 0, nx: -dy / L, ny: dx / L };     // leave to the left
+  toast("Walking off the route…");
+};
+$("sbad").onclick = () => { simBad = !simBad; $("sbad").classList.toggle("on", simBad); toast(simBad ? "Bad GPS on" : "Bad GPS off"); };
+$("srelocate").onclick = relocate;
 function placeRecenter() { $("recenter").style.bottom = ($("bar").getBoundingClientRect().height + 22) + "px"; }
 window.addEventListener("resize", placeRecenter); placeRecenter();
 $("sim").querySelectorAll("[data-x]").forEach(b => b.onclick = () => {
   simMult = +b.dataset.x;
   $("sim").querySelectorAll("[data-x]").forEach(o => o.classList.toggle("on", o === b));
-  if (tracking) { stopTracking(); startTracking(); }
 });
 $("relocate").onclick = relocate;
 $("recenter").onclick = () => { follow = true; render(); };

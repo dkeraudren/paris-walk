@@ -46,9 +46,16 @@ button.on { outline:2px solid var(--accent); }
   border-radius:22px; box-shadow:0 2px 8px #0003; background:var(--card); font-size:20px; }
 #bnext { font-size:13px; color:var(--muted); margin:-4px 0 10px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
 #bnext b { color:var(--fg); }
-#sim { display:none; gap:6px; margin-top:8px; align-items:center; font-size:13px; color:var(--muted); }
-#sim.show { display:flex; }
-#sim button { padding:6px 10px; }
+#sim, #more { display:none; margin-top:8px; font-size:13px; color:var(--muted); }
+#sim.show, #more.show { display:block; }
+.row { display:flex; gap:6px; align-items:center; margin-top:6px; }
+.row span { width:42px; flex:none; }
+.row button { padding:7px 10px; flex:1; }
+.row button.wide { flex:1; }
+#bar.simon { outline:3px solid var(--warn); }
+#simbadge { display:none; position:absolute; top:-12px; left:14px; background:var(--warn); color:#fff; font-size:11px;
+  font-weight:700; letter-spacing:.04em; padding:2px 8px; border-radius:8px; }
+#bar.simon #simbadge { display:block; }
 .arrow { color:#fff; font-size:13px; line-height:16px; text-align:center; text-shadow:0 0 2px #000, 0 0 2px #000; }
 .me { width:18px; height:18px; border-radius:50%; background:#1a73e8; border:3px solid #fff; box-shadow:0 0 0 1px #0004, 0 0 10px #1a73e8; }
 #toast { position:absolute; left:50%; top:120px; transform:translateX(-50%); z-index:3000; background:#000c; color:#fff;
@@ -70,17 +77,24 @@ button.on { outline:2px solid var(--accent); }
 <button id="recenter" title="Follow my position">◎</button>
 
 <div id="bar" class="card">
+  <div id="simbadge">SIMULATION · progress not saved</div>
   <div id="binfo"><span id="bkm"></span><span id="btoday"></span></div>
   <div id="prog"><i></i></div>
   <div id="bnext"></div>
   <div id="btns">
     <button id="bgo" class="primary">Start</button>
+    <button id="bsim">Simulate</button>
     <button id="bmore" title="More">⋯</button>
   </div>
+  <div id="more" class="row">
+    <button id="relocate">Re-locate me on the route</button>
+  </div>
   <div id="sim">
-    Simulate walk:
-    <button data-x="0">Off</button><button data-x="1">×1</button><button data-x="10">×10</button><button data-x="40">×40</button>
-    <button id="relocate">Re-locate</button>
+    <div class="row"><span>Speed</span>
+      <button data-x="1" class="on">Walk</button><button data-x="5">×5</button><button data-x="20">×20</button><button data-x="80">×80</button></div>
+    <div class="row"><span>Test</span>
+      <button id="swrong">Wrong turn</button><button id="sbad">Bad GPS</button><button id="srelocate">Re-locate</button></div>
+    <div class="row"><button id="sexit" class="wide">Stop simulation</button></div>
   </div>
 </div>
 
